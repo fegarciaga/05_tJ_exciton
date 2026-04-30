@@ -202,6 +202,25 @@ function ITensors.op!(Op::ITensor, ::OpName"Sma", ::SiteType"2tJ", s::Index)
     return Op[s' => 9, s => 7] = 1
 end
 
+function ITensors.op!(Op::ITensor, ::OpName"Sxa", ::SiteType"2tJ", s::Index)
+    Op[s' => 2, s => 3] = 0.5
+    Op[s' => 3, s => 2] = 0.5
+    Op[s' => 6, s => 8] = 0.5
+    Op[s' => 8, s => 6] = 0.5
+    Op[s' => 7, s => 9] = 0.5
+    return Op[s' => 9, s => 7] = 0.5
+end
+
+function ITensors.op!(Op::ITensor, ::OpName"Sya", ::SiteType"2tJ", s::Index)
+    complex!(Op)
+    Op[s' => 2, s => 3] =  0.5*1im
+    Op[s' => 3, s => 2] = -0.5*1im
+    Op[s' => 6, s => 8] =  0.5*1im
+    Op[s' => 8, s => 6] = -0.5*1im
+    Op[s' => 7, s => 9] =  0.5*1im
+    return Op[s' => 9, s => 7] = -0.5*1im
+end
+
 function ITensors.op!(Op::ITensor, ::OpName"Spb", ::SiteType"2tJ", s::Index)
     Op[s' => 4, s => 5] = 1
     Op[s' => 6, s => 7] = 1
@@ -212,6 +231,25 @@ function ITensors.op!(Op::ITensor, ::OpName"Smb", ::SiteType"2tJ", s::Index)
     Op[s' => 5, s => 4] = 1
     Op[s' => 7, s => 6] = 1
     return Op[s' => 9, s => 8] = 1
+end
+
+function ITensors.op!(Op::ITensor, ::OpName"Sxb", ::siteType"2tJ", s::Index)
+    Op[s' => 4, s => 5] = 0.5
+    Op[s' => 5, s => 4] = 0.5
+    Op[s' => 6, s => 7] = 0.5
+    Op[s' => 7, s => 6] = 0.5
+    Op[s' => 8, s => 9] = 0.5
+    return Op[s => 9, s => 8] = 0.5
+end
+
+function ITensors.op!(Op::ITensor, ::OpName"Syb", ::siteType"2tJ", s::Index)
+    complex!(Op)
+    Op[s' => 4, s => 5] =  0.5*1im
+    Op[s' => 5, s => 4] = -0.5*1im
+    Op[s' => 6, s => 7] =  0.5*1im
+    Op[s' => 7, s => 6] = -0.5*1im
+    Op[s' => 8, s => 9] =  0.5*1im
+    return Op[s' => 9, s => 8] = -0.5*1im
 end
 
 function ITensors.op!(Op::ITensor, ::OpName"bdagup", ::SiteType"2tJ", s::Index)
@@ -342,8 +380,8 @@ function Find_E(N, Na, Nb, t, J, U)
 
     ψ = randomMPS(sites, state, 10)
 
-    sweeps = Sweeps(30)
-    maxdim!(sweeps, 20, 20, 30, 30, 50, 50, 100, 100, 100, 200, 200, 200, 200, 200, 400)
+    sweeps = Sweeps(20)
+    maxdim!(sweeps, 20, 20, 30, 30, 50, 50, 100, 100, 100, 200)
     noise!(sweeps, 1E-6, 1E-7, 1E-8, 1E-9)
     cutoff!(sweeps, 1E-8)
     E, ϕ = dmrg(H, ψ, sweeps)
@@ -382,6 +420,76 @@ function Find_Dex(N, Na, Nb, t, J, U)
     E4 = Find_E(N, Na-1, Nb+1, t, J, U)
     println(E1 - E2 - E3 + E4)
     return E1 - E2 - E3 + E4
+end
+
+# LLG functions
+
+function Compute_Heff(Spins, Qspins, Jex, Jsd, Jani, eani, Hext)
+    # Computes the effective field in the LLG equation
+    # For simplicity, I'm only gonna consider two spins, one per layer, 
+    # and coupled to the middle of the chain
+    # Spins is a 2x3 array with the spin directions
+    # Qspins is the vector of expectation valuues of quantum spins
+    # Jsd coupling strength between quantum and classical spins
+    # Jex is the Heisenberg exchange interaction between classical spins
+    # Jani is the easy axis anisotropy
+    # Hext is the external magnetic field
+    # eani anisotropy unitary vector direction
+
+    Heff = zeros(2, 3)
+
+    # Classical interaction
+    Heff[1,:] += Jex * Spins[2,:] + Hext[1,:] + 2*Jani * (eani[1,:] ⋅ Spins[1,:]) * eani[1,:]
+    Heff[2,:] += Jex * Spins[1,:] + Hext[1,:] + 2*Jani * (eani[2,:] ⋅ Spins[2,:]) * eani[2,:]
+
+    # Interaction with exciton via mean field coupling
+    Heff[1,:] += Jsd * Qspins[1,:]
+    Heff[2,:] += Jsd * Qspins[2,:]
+    return Heff
+end
+
+function Spin_change(Spins, gamma, lambda, dt, Heff)
+    # Computes the change for a single LLG discrete time-evolution
+    # gamma: gyromagnetic ratio
+    # lambda: Gilbert damping
+    # dt: time step
+    Spinsp = zeros(2,3)
+
+    for i in 1:2
+        A = -gamma*(cross(Spins[i,:], Heff[i,:])+lambda*(cross(Spins[i,:], cross(Spins[i,:],Heff[i,:]))))
+        Spinsp[i,:] += A
+    end
+    return Spinsp
+end
+
+function Normalize(Spin)
+    NSpins = zeros(2,3)
+    for i in 1:2
+        NSpins[i,:] = Spin[i,:]/norm(Spin[i,:])
+    end
+    return NSpins
+end
+
+function Integrate_LLG(Spins, Qspins, gamma, Lambda, dt, Jex, Jsd, Jani, eani, Hext)
+    Heff = Compute_Heff(Spins, Qspins, Jex, Jsd, Jani, eani, Hext)
+    Spinsp1 = Spin_change(Spins, gamma, Lambda, dt, Heff)
+    New_spins = Normalize(Spins + Spinsp1)
+    Heff = Compute_Heff(New_spins, Qspins, Jex, Jsd, Jani, eani, Heff)
+    Spinsp2 = Spin_change(New_spins, gamma, Lambda, dt, Heff)
+    Spin = Normalize(Spins + 0.5*(Spinsp1+Spinsp2))
+    return Spin
+end
+
+function get_QSpins(ϕ, Nhalf)
+    Qspins = zeros(2,3)
+    Qspins[1,1] = real(expect(ϕ, "Sxa"; sites=Nhalf))
+    Qspins[1,2] = real(expect(complex(ϕ), "Sya"; sites=Nhalf))
+    Qspins[1,3] = real(expect(ϕ, "Sza"; sites=Nhalf))
+
+    Qspins[2,1] = real(expect(ϕ, "Sxb"; sites=Nhalf))
+    Qspins[2,2] = real(expect(complex(ϕ), "Syb"; sites=Nhalf))
+    Qspins[2,3] = real(expect(ϕ, "Szb"; sites=Nhalf))
+    return Qspins
 end
 
 N = 24
@@ -426,9 +534,7 @@ Nb = 16
 
 Dex[6] = Find_Dex(N, Na, Nb, t, J, U)
 
-writedlm("Data/Dex.txt", data)
+Cex = zeros(64)
+Cex = Compute_single_exciton_distribution(N, Na, Nb, t, J, U)
 
-#Cex = zeros(64)
-#Cex = Compute_single_exciton_distribution(N, Na, Nb, t, J, U)
-
-#writedlm("Data/Cex.txt", data)
+writedlm("Data/Cex.txt", data)
